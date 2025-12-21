@@ -267,22 +267,22 @@ def inspect_attention_module(model):
     print("=" * 60)
     
     attn = model.model.layers[0].self_attn
+    config = model.config
     
     print(f"\nAttention Module Type: {type(attn).__name__}")
-    print(f"\nAttributes:")
+    print(f"\nConfiguration (from model.config):")
     print("-" * 40)
     
-    attrs = [
-        'num_heads',
-        'num_key_value_heads', 
-        'head_dim',
-        'hidden_size',
-        'num_key_value_groups',
-    ]
+    # Get values from config (more reliable than module attributes)
+    n_heads = config.num_attention_heads
+    n_kv_heads = config.num_key_value_heads
+    head_dim = config.hidden_size // n_heads
     
-    for attr in attrs:
-        if hasattr(attn, attr):
-            print(f"  {attr}: {getattr(attn, attr)}")
+    print(f"  num_attention_heads: {n_heads}")
+    print(f"  num_key_value_heads: {n_kv_heads}")
+    print(f"  head_dim: {head_dim}")
+    print(f"  hidden_size: {config.hidden_size}")
+    print(f"  num_key_value_groups: {n_heads // n_kv_heads}")
     
     print(f"\nProjection Weights:")
     print("-" * 40)
@@ -317,8 +317,14 @@ def visualize_qkv_projections(model, tokenizer, text: str):
     
     print(f"\nEmbedding shape: {hidden_states.shape}")
     
-    # Get first layer attention
+    # Get first layer attention and config
     attn = model.model.layers[0].self_attn
+    config = model.config
+    
+    # Get head dimensions from config (not from attn module)
+    n_heads = config.num_attention_heads
+    n_kv_heads = config.num_key_value_heads
+    head_dim = config.hidden_size // n_heads
     
     # Apply layer norm first (important!)
     norm = model.model.layers[0].input_layernorm
@@ -337,10 +343,6 @@ def visualize_qkv_projections(model, tokenizer, text: str):
     print(f"  V: {V.shape}")
     
     # Reshape to heads
-    n_heads = attn.num_heads
-    n_kv_heads = attn.num_key_value_heads
-    head_dim = attn.head_dim
-    
     Q_reshaped = Q.view(1, seq_len, n_heads, head_dim).transpose(1, 2)
     K_reshaped = K.view(1, seq_len, n_kv_heads, head_dim).transpose(1, 2)
     V_reshaped = V.view(1, seq_len, n_kv_heads, head_dim).transpose(1, 2)
