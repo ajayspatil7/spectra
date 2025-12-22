@@ -101,10 +101,13 @@ def stream_dataset() -> Iterator[Dict]:
     print(f"Loading dataset: {DATASET_NAME} (split: {DATASET_SPLIT})")
     print("Using streaming mode...")
     
+    # trust_remote_code=True needed for some dataset configurations
+    # This dataset uses parquet files which require this flag
     dataset = load_dataset(
         DATASET_NAME,
         split=DATASET_SPLIT,
-        streaming=True
+        streaming=True,
+        trust_remote_code=True
     )
     
     return iter(dataset)
