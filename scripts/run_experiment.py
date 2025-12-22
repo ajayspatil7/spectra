@@ -235,7 +235,11 @@ def run_experiment(args):
     }
     
     if null_dist:
-        summary['randomization_control'] = null_dist
+        # Convert numpy types to Python types for JSON serialization
+        summary['randomization_control'] = {
+            k: float(v) if hasattr(v, 'item') else v 
+            for k, v in null_dist.items()
+        }
         summary['times']['control'] = control_time
     
     summary_path = output_dir / f"summary_{timestamp}.json"
