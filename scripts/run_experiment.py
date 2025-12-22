@@ -32,7 +32,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import ExperimentConfig
-from src.data_loader import load_long_context
+from src.data_loader import load_long_context, load_from_shards
 from src.hooks import AttentionProfiler
 from src.metrics import (
     compute_query_norm,
@@ -51,6 +51,10 @@ def parse_args():
                         help="Model name or path")
     parser.add_argument("--context-length", type=int, default=4096,
                         help="Context length in tokens")
+    parser.add_argument("--n-samples", type=int, default=1,
+                        help="Number of samples to process")
+    parser.add_argument("--data-dir", type=str, default="data/processed",
+                        help="Directory containing preprocessed shards")
     parser.add_argument("--output-dir", type=str, default="results",
                         help="Output directory for results")
     parser.add_argument("--skip-control", action="store_true",
@@ -112,6 +116,7 @@ def run_experiment(args):
     print("=" * 60)
     print(f"Timestamp: {timestamp}")
     print(f"Context length: {args.context_length}")
+    print(f"Number of samples: {args.n_samples}")
     print(f"Output directory: {output_dir}")
     
     # Check GPU
@@ -127,40 +132,103 @@ def run_experiment(args):
     print(f"Model load time: {load_time:.1f}s")
     
     # Prepare input data
-    print(f"\nPreparing {args.context_length}-token input...")
-    inputs = load_long_context(tokenizer, target_length=args.context_length)
-    input_ids = inputs["input_ids"]
-    seq_len = input_ids.shape[1]
-    print(f"Actual sequence length: {seq_len}")
+    print(f"\nPreparing input data...")
     
-    # Profile attention
-    print("\nProfiling attention layers...")
-    profiler = AttentionProfiler(model)
+    # Try to load from shards if n_samples > 1
+    if args.n_samples > 1:
+        samples = load_from_shards(
+            data_dir=args.data_dir,
+            n_samples=args.n_samples,
+            device="cuda"
+        )
+        if samples is None:
+            print("Falling back to single sample mode")
+            samples = [load_long_context(tokenizer, target_length=args.context_length)]
+    else:
+        samples = [load_long_context(tokenizer, target_length=args.context_length)]
     
-    profile_start = time.time()
-    layer_data = profiler.profile(input_ids, compute_attn_probs=True)
-    profile_time = time.time() - profile_start
-    print(f"Profiling time: {profile_time:.1f}s")
+    print(f"Processing {len(samples)} samples...")
     
-    profiler.print_summary()
+    # Aggregate results across all samples
+    all_results = []
+    profile_times = []
     
-    # Get aggregated metrics
-    print("\nComputing metrics...")
-    q_norms = profiler.get_all_query_norms()
-    entropy = profiler.get_all_attention_entropy()
+    # Profile attention for each sample
+    for sample_idx, inputs in enumerate(samples):
+        print(f"\n{'='*60}")
+        print(f"Sample {sample_idx + 1}/{len(samples)}")
+        print(f"{'='*60}")
+        
+        input_ids = inputs["input_ids"]
+        seq_len = input_ids.shape[1]
+        print(f"Sequence length: {seq_len}")
+        
+        # Profile attention
+        profiler = AttentionProfiler(model)
+        
+        profile_start = time.time()
+        layer_data = profiler.profile(input_ids, compute_attn_probs=True)
+        profile_time = time.time() - profile_start
+        profile_times.append(profile_time)
+        print(f"Profiling time: {profile_time:.1f}s")
+        
+        # Get metrics
+        q_norms = profiler.get_all_query_norms()
+        entropy = profiler.get_all_attention_entropy()
+        
+        # Compute correlations for this sample
+        sample_results = compute_correlations(q_norms, entropy, verbose=False)
+        all_results.append(sample_results)
+        
+        # Clear CUDA cache to prevent OOM
+        torch.cuda.empty_cache()
     
-    print(f"Query norms shape: {q_norms.shape}")
-    print(f"Entropy shape: {entropy.shape}")
+    # Aggregate correlations across samples
+    print(f"\n{'='*60}")
+    print("AGGREGATING RESULTS ACROSS SAMPLES")
+    print(f"{'='*60}")
     
-    # Compute correlations
-    print("\nComputing correlations...")
-    correlation_start = time.time()
-    results = compute_correlations(q_norms, entropy, verbose=True)
-    correlation_time = time.time() - correlation_start
-    print(f"Correlation computation time: {correlation_time:.1f}s")
+    # Combine all results
+    from collections import defaultdict
+    aggregated = defaultdict(list)
+    
+    for sample_results in all_results:
+        for result in sample_results:
+            key = (result.layer, result.head)
+            aggregated[key].append({
+                'pearson_r': result.pearson_r,
+                'pearson_p': result.pearson_p,
+                'spearman_r': result.spearman_r,
+                'spearman_p': result.spearman_p,
+            })
+    
+    # Compute mean correlations per (layer, head)
+    from src.metrics import CorrelationResult
+    results = []
+    
+    for (layer, head), sample_corrs in aggregated.items():
+        mean_pearson_r = np.mean([s['pearson_r'] for s in sample_corrs])
+        mean_pearson_p = np.mean([s['pearson_p'] for s in sample_corrs])
+        mean_spearman_r = np.mean([s['spearman_r'] for s in sample_corrs])
+        mean_spearman_p = np.mean([s['spearman_p'] for s in sample_corrs])
+        
+        results.append(CorrelationResult(
+            layer=layer,
+            head=head,
+            pearson_r=mean_pearson_r,
+            pearson_p=mean_pearson_p,
+            spearman_r=mean_spearman_r,
+            spearman_p=mean_spearman_p,
+        ))
+    
+    print(f"Aggregated results from {len(samples)} samples")
+    print(f"Mean profiling time: {np.mean(profile_times):.1f}s")
     
     # Print summary
     print_summary(results)
+    
+    profile_time = np.mean(profile_times)
+    correlation_time = 0  # Already computed in aggregation
     
     # Randomization control
     null_dist = None
@@ -218,6 +286,7 @@ def run_experiment(args):
         'timestamp': timestamp,
         'model': args.model,
         'context_length': args.context_length,
+        'n_samples': len(samples),
         'n_layers': model.config.num_hidden_layers,
         'n_heads': model.config.num_attention_heads,
         'total_pairs': len(results),

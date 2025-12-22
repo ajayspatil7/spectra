@@ -236,6 +236,69 @@ def load_from_dataset(
     return load_long_context(tokenizer, target_length, text, device)
 
 
+def load_from_shards(
+    data_dir: str = "data/processed",
+    n_samples: int = 1,
+    device: str = "cuda"
+) -> list:
+    """
+    Load samples from preprocessed .npz shards.
+    
+    Args:
+        data_dir: Directory containing shard_*.npz files
+        n_samples: Number of samples to load
+        device: Device to place tensors on
+        
+    Returns:
+        List of dicts, each containing 'input_ids' and 'attention_mask' tensors
+    """
+    import numpy as np
+    
+    data_path = Path(data_dir)
+    
+    # Find all shard files
+    shard_files = sorted(data_path.glob("shard_*.npz"))
+    
+    if not shard_files:
+        print(f"No shard files found in {data_dir}")
+        print("Falling back to single sample mode")
+        return None
+    
+    print(f"Found {len(shard_files)} shard files")
+    
+    # Load samples
+    samples = []
+    loaded = 0
+    
+    for shard_file in shard_files:
+        if loaded >= n_samples:
+            break
+            
+        # Load shard
+        data = np.load(shard_file)
+        input_ids = data["input_ids"]
+        
+        # Get samples from this shard
+        for i in range(len(input_ids)):
+            if loaded >= n_samples:
+                break
+            
+            # Convert to tensor
+            input_id_tensor = torch.from_numpy(input_ids[i]).unsqueeze(0).to(device)
+            attention_mask_tensor = torch.ones_like(input_id_tensor)
+            
+            samples.append({
+                "input_ids": input_id_tensor,
+                "attention_mask": attention_mask_tensor
+            })
+            
+            loaded += 1
+    
+    print(f"Loaded {loaded} samples from {data_dir}")
+    
+    return samples
+
+
 if __name__ == "__main__":
     # Test the data loader
     from transformers import AutoTokenizer
