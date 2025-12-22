@@ -285,3 +285,51 @@ Before trusting results, verify:
 3. **Directional Expectations Logged**
    - Script must print expected trends before running sweep
    - Forces explicit confrontation of unexpected behavior
+
+---
+
+## 📊 Path A: Gain Analysis
+
+### Purpose
+
+Quantify how strongly each attention head responds to query magnitude scaling.
+
+> Does the target head exploit query magnitude with higher sensitivity than a random head?
+
+### Implementation
+
+- [x] **`notebooks/gain/compute_gain.py`** — Gain computation script
+  - Loads intervention CSVs
+  - Computes `Gain = slope of (max_attn vs log(scale))`
+  - Fits linear regression via OLS
+  - Outputs `gain_summary.csv` and comparison plots
+
+### Metric Definition
+
+```
+Gain = d(mean_max_attn) / d(log(scale))
+```
+
+Higher Gain = higher sensitivity to Q magnitude.
+
+### Running Gain Analysis
+
+```bash
+python notebooks/gain/compute_gain.py
+```
+
+### Outputs (saved to `notebooks/gain/`)
+
+| File                  | Description               |
+| --------------------- | ------------------------- |
+| `gain_summary.csv`    | Gain values for all heads |
+| `gain_fit_L*_H*.png`  | Individual head fit plots |
+| `gain_comparison.png` | Bar chart comparing heads |
+
+### Interpretation
+
+| Gain Ratio (Target/Control) | Meaning                                         |
+| --------------------------- | ----------------------------------------------- |
+| ≈ 1.0                       | No functional distinction — universal mechanism |
+| ≥ 1.5x                      | Target shows higher sensitivity                 |
+| ≥ 2.0x                      | Strong evidence of head-specific exploitation   |
