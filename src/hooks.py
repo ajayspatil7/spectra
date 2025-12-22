@@ -307,10 +307,10 @@ class AttentionProfiler:
                 raise RuntimeError(f"No attention probs for layer {layer_idx}")
             
             # Use the single canonical entropy implementation
+            # Note: ignore_first_n defaults to 2 in compute_attention_entropy
             entropy = compute_attention_entropy(
                 attn_probs,
-                causal_mask=causal_mask,
-                ignore_first_n=0  # Don't double-ignore; let caller decide
+                causal_mask=causal_mask
             ).squeeze(0)  # [n_heads, seq]
             
             entropies.append(entropy)
