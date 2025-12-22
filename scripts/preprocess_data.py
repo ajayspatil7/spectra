@@ -65,6 +65,9 @@ ALLOWED_SOURCES = {
 DATASET_NAME = "DKYoon/SlimPajama-6B"
 DATASET_SPLIT = "test"     # SlimPajama-6B only has train/test splits (no validation)
 
+# Data storage
+RAW_DATA_DIR = Path("data/raw")  # Directory to store downloaded dataset
+
 # ============================================================================
 # PREPROCESSING FUNCTIONS
 # ============================================================================
@@ -88,73 +91,41 @@ def load_tokenizer():
 
 def stream_dataset() -> Iterator[Dict]:
     """
-    Stream dataset without downloading fully.
+    Download and load the full dataset from HuggingFace.
     
-    Why streaming:
-    - Memory efficient
-    - No disk space for full dataset
-    - Can stop early
-    - Resume-friendly
+    Downloads the entire SlimPajama-6B test split to /data/raw directory.
+    If dataset is already downloaded, it will reuse the cached version.
     
-    Note: Uses huggingface_hub directly to avoid datasets glob pattern issues.
+    Why full download:
+    - Faster preprocessing on subsequent runs
+    - Complete data availability for experiments
+    - No dependency on network for repeated runs
+    
+    Note: Uses datasets library with cache_dir to download to /data/raw
     SlimPajama-6B structure: data/{split}-*.parquet
     """
-    from huggingface_hub import HfFileSystem
-    import pyarrow.parquet as pq
+    from datasets import load_dataset
     
     print(f"Loading dataset: {DATASET_NAME} (split: {DATASET_SPLIT})")
-    print("Using HuggingFace Hub streaming...")
+    print(f"Download location: {RAW_DATA_DIR.absolute()}")
     
-    # Initialize HF filesystem
-    fs = HfFileSystem()
+    # Create raw data directory if it doesn't exist
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Created directory: {RAW_DATA_DIR.absolute()}")
     
-    # SlimPajama-6B stores files in data/ directory with naming: {split}-{shard}-of-{total}-{hash}.parquet
-    repo_path = f"datasets/{DATASET_NAME}"
-    data_path = f"{repo_path}/data"
+    # Download full dataset to /data/raw
+    print("Downloading full dataset (this may take a while on first run)...")
+    dataset = load_dataset(
+        DATASET_NAME,
+        split=DATASET_SPLIT,
+        cache_dir=str(RAW_DATA_DIR.absolute()),
+        streaming=False  # Download full dataset
+    )
     
-    # Get parquet files for the requested split
-    try:
-        files = fs.ls(data_path, detail=False)
-        # Filter for the requested split (test or train)
-        parquet_files = [f for f in files if f.endswith('.parquet') and f"/{DATASET_SPLIT}-" in f]
-    except Exception as e:
-        print(f"Error listing files: {e}")
-        print("Falling back to datasets library...")
-        
-        # Ultimate fallback: use datasets with explicit parquet URL
-        from datasets import load_dataset
-        dataset = load_dataset(
-            "parquet",
-            data_files={DATASET_SPLIT: f"hf://datasets/{DATASET_NAME}/data/{DATASET_SPLIT}-*.parquet"},
-            split=DATASET_SPLIT,
-            streaming=True
-        )
-        return iter(dataset)
+    print(f"Dataset loaded: {len(dataset):,} samples")
     
-    if not parquet_files:
-        raise RuntimeError(f"No parquet files found for {DATASET_NAME} {DATASET_SPLIT} split")
-    
-    parquet_files = sorted(parquet_files)  # Ensure consistent order
-    print(f"Found {len(parquet_files)} parquet files for {DATASET_SPLIT} split")
-    
-    # Generator to yield samples from parquet files
-    def generate_samples():
-        for parquet_file in parquet_files:
-            try:
-                print(f"Reading: {parquet_file.split('/')[-1]}")
-                # Open and read parquet file in streaming fashion
-                with fs.open(parquet_file, 'rb') as f:
-                    table = pq.read_table(f)
-                    
-                    # Convert to pandas and iterate
-                    df = table.to_pandas()
-                    for _, row in df.iterrows():
-                        yield row.to_dict()
-            except Exception as e:
-                print(f"Error reading {parquet_file}: {e}")
-                continue
-    
-    return generate_samples()
+    # Return iterator over dataset
+    return iter(dataset)
 
 
 def is_valid_source(sample: Dict) -> bool:
