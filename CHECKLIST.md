@@ -1,193 +1,204 @@
-# Spectra: Attention Metrics Data Capture
+# Spectra Phase 1 — Main Branch Checklist
 
-## Objective
-
-Capture detailed per-token attention metrics from Llama-3-8B for downstream analysis.
-
-**Metrics Captured:**
-
-- Query L2 norms (‖Q‖)
-- Attention entropy (H)
-- Maximum attention weights (α_max)
-- Effective attention span (k_eff)
+**Branch:** `main` (baseline, protected)  
+**Purpose:** Capture detailed per-token attention metrics from Llama-3-8B  
+**Status:** ✅ COMPLETE — Moved to `intervene` branch for experiments
 
 ---
 
-## ✅ Completed
+## ✅ Infrastructure Setup
 
-### Infrastructure
+### Repository & Environment
 
-- [x] **Git repository** — Project structure on GitHub
-- [x] **Data preprocessing** —scripts/preprocess_data.py` for SlimPajama-6B
-  - Full dataset download to `/data/raw`
-  - Source filtering (CommonCrawl, C4, Wikipedia, StackExchange)
-  - Non-overlapping 512-token chunks
-  - NumPy .npz shard output
-  - **Status:** 4 shards, 12,000 sequences created
+- [x] Git repository initialized and pushed to GitHub
+- [x] `.gitignore` configured (excludes `data/`, `results/`, `.pkl`, etc.)
+- [x] `requirements.txt` with PyTorch, transformers, scipy, pandas, tqdm
+- [x] README.md with complete documentation
+- [x] AWS SageMaker compatible (A10G GPU tested)
 
-### Core Implementation
+### Data Pipeline
 
-- [x] **Attention hooks** — `src/hooks.py` with `AttentionProfiler`
-  - Pre-RoPE Q/K/V capture
-  - Attention recomputation
-  - 32 layers × 32 heads = 1,024 attention heads
-- [x] **Metrics module** — `src/metrics.py`
-  - Query norm computation (L2)
-  - Attention entropy (mask-aware, NaN-safe)
-  - Max attention weight computation
-  - Effective attention span (k_eff, 90% threshold)
-- [x] **Data loader** — `src/data_loader.py`
-  - Load from .npz shards
-  - Multi-sample support
-  - Fallback to single sample
-- [x] **Main capture script** — `scripts/run_experiment.py`
-  - Per-token metrics collection
-  - Incremental CSV writing
-  - Progress tracking with ETA
-- [x] **Configuration info script** — `scripts/show_experiment_config.py`
-- [x] **NPZ explorer** — `scripts/explore_npz.py`
-
-### Experiments
-
-- [x] **64-sample capture** — Processing on A10G GPU
-  - Expected output: ~33.5M rows, ~768 MB CSV
-  - Metrics: query_norm, entropy, max_attn, k_eff
+- [x] **`scripts/preprocess_data.py`** — SlimPajama-6B preprocessing
+  - Full dataset download to `/data/raw` (changed from streaming)
+  - Source filtering: CommonCrawl, C4, Wikipedia, StackExchange
+  - Excluded: GitHub, ArXiv, Books
+  - Fixed 512-token non-overlapping chunks
+  - NumPy `.npz` shard output (int32)
+  - Validation checks for vocab range, length, no padding
+- [x] **4 shards created** — 12,000 sequences total (~6.14M tokens)
 
 ---
 
-## 📊 Current Status
+## ✅ Core Implementation
 
-**Data Ready:**
+### Attention Profiler (`src/hooks.py`)
 
-- 4 shards with 12,000 sequences (512 tokens each)
-- ~6.14M tokens from SlimPajama-6B test split
+- [x] **`AttentionProfiler` class** — Captures Q/K/V from all 32 layers
+- [x] Forward hooks on `input_layernorm` per layer
+- [x] **Pre-RoPE capture** — Queries before rotary position embedding
+- [x] Manual attention recomputation: `softmax(Q @ K^T / sqrt(d))`
+- [x] Causal masking applied
+- [x] Hook registration and removal methods
+- [x] Summary method for debugging
 
-**Script Ready:**
+### Metrics Module (`src/metrics.py`)
 
-- Captures 4 metrics per (sample, layer, head, token)
-- Saves to CSV: `attention_metrics_{timestamp}.csv`
+- [x] **`compute_attention_entropy()`** — Shannon entropy of attention
+  - Mask-aware, NaN-safe, float32 precision
+  - First 2 tokens → NaN (insufficient context)
+  - Formula: `H = -Σ p·log(p)`
+- [x] **`compute_max_attention_weight()`** — Peak attention per token
+  - Uses `masked_fill()` for proper broadcasting
+- [x] **`compute_effective_attention_span()`** — k_eff metric
+  - 90% cumulative attention mass threshold
+  - Sorted descending, cumsum approach
+- [x] **`compute_query_norm()`** — L2 norm of Q vectors
 
----
+### Data Loader (`src/data_loader.py`)
 
-## Quick Start
-
-```bash
-# Clone and setup
-git clone https://github.com/ajayspatil7/spectra.git
-cd spectra
-pip install -r requirements.txt
-
-# Download and preprocess data (one-time)
-python scripts/preprocess_data.py --n-samples 50000 --output-dir data/processed
-
-# Run metrics capture (64 samples)
-python scripts/run_experiment.py --context-length 512 --n-samples 64
-
-# View experiment configuration
-python scripts/show_experiment_config.py
-
-# Explore preprocessed shards
-python scripts/explore_npz.py data/processed/shard_00000.npz
-```
+- [x] **`load_long_context()`** — Single sample from hardcoded text
+- [x] **`load_from_shards()`** — Multi-sample loading from .npz files
+  - Sequential loading (first N samples)
+  - Returns list of dicts with `input_ids`, `attention_mask`
+  - Fallback to single sample if shards not found
 
 ---
 
-## Output CSV Format
+## ✅ Experiment Script (`scripts/run_experiment.py`)
 
-| Column       | Description                                |
-| ------------ | ------------------------------------------ |
-| `sample_id`  | Sample index (0-63)                        |
-| `layer`      | Layer index (0-31)                         |
-| `head`       | Head index (0-31)                          |
-| `token_pos`  | Token position (0-511)                     |
-| `query_norm` | L2 norm of query vector                    |
-| `entropy`    | Attention entropy (NaN for first 2 tokens) |
-| `max_attn`   | Maximum attention weight                   |
-| `k_eff`      | Effective attention span (90% threshold)   |
+### Arguments
 
-**Total rows for 64 samples:** 33,554,432
+- [x] `--model` — Model name (default: meta-llama/Meta-Llama-3-8B)
+- [x] `--context-length` — Sequence length (default: 512)
+- [x] `--n-samples` — Number of samples to process (default: 1)
+- [x] `--data-dir` — Shard directory (default: data/processed)
+- [x] `--output-dir` — CSV output path (default: results)
+- [x] `--seed` — Random seed
+
+### Processing Loop
+
+- [x] Load N samples from shards
+- [x] For each sample:
+  - Create `AttentionProfiler`
+  - Run forward pass, capture Q/K/V/attention
+  - Compute 4 metrics per (layer, head, token)
+  - Append to CSV incrementally
+  - Clear CUDA cache
+- [x] Progress tracking with tqdm and ETA
+
+### Output Format
+
+- [x] CSV file: `attention_metrics_{timestamp}.csv`
+- [x] Columns: `sample_id`, `layer`, `head`, `token_pos`, `query_norm`, `entropy`, `max_attn`, `k_eff`
+- [x] 64 samples → 33.5M rows, ~768 MB
 
 ---
 
-## File Structure
+## ✅ Utility Scripts
+
+### `scripts/explore_npz.py`
+
+- [x] NPZ file investigation tool
+- [x] Shows shape, dtype, statistics, unique values
+- [x] Token frequency analysis
+
+### `scripts/show_experiment_config.py`
+
+- [x] Prints experiment configuration
+- [x] Documents all design decisions
+- [x] Displays metric formulas and thresholds
+
+---
+
+## ✅ Bug Fixes Applied
+
+| Issue                                   | Fix                                                   | Commit    |
+| --------------------------------------- | ----------------------------------------------------- | --------- |
+| `CorrelationResult` missing `n_samples` | Added `n_samples=len(samples)`                        | `d3ca088` |
+| Mask broadcasting error in metrics      | Changed to `masked_fill()` and `* valid_mask.float()` | `04d4681` |
+| Streaming mode slow                     | Changed to full download with `cache_dir`             | `e03477c` |
+
+---
+
+## 📊 Experiment Runs Completed
+
+### 64-Sample Capture (Main Result)
+
+- **Samples:** 64 from SlimPajama-6B test split
+- **Metrics:** query_norm, entropy, max_attn, k_eff
+- **Rows:** 33,554,432
+- **Runtime:** ~15-20 minutes on A10G
+- **Output:** `results/attention_metrics_*.csv`
+
+---
+
+## 🔧 Configuration Summary
+
+| Parameter        | Value                                     |
+| ---------------- | ----------------------------------------- |
+| Model            | meta-llama/Meta-Llama-3-8B                |
+| Precision        | float16                                   |
+| Layers           | 32                                        |
+| Heads            | 32 (GQA: 8 KV heads)                      |
+| Context          | 512 tokens                                |
+| Attention        | Pre-RoPE, manually recomputed             |
+| Entropy ignore   | First 2 tokens (NaN)                      |
+| k_eff threshold  | 0.9 (90%)                                 |
+| Sample selection | Sequential (not random/stratified)        |
+| Data sources     | CommonCrawl, C4, Wikipedia, StackExchange |
+
+---
+
+## 📁 File Structure (Main Branch)
 
 ```
 Spectra/
 ├── src/
-│   ├── config.py           # Experiment configuration
-│   ├── hooks.py            # AttentionProfiler (Q/K/V capture)
-│   ├── metrics.py          # All metric computations
-│   └── data_loader.py      # Data loading utilities
+│   ├── config.py               # Experiment configuration
+│   ├── hooks.py                # AttentionProfiler (pre-RoPE)
+│   ├── metrics.py              # All 4 metric functions
+│   └── data_loader.py          # Shard loading
 ├── scripts/
-│   ├── run_experiment.py   # Main metrics capture script
-│   ├── preprocess_data.py  # SlimPajama-6B preprocessing
-│   ├── explore_npz.py      # NPZ file investigation
-│   └── show_experiment_config.py  # Config info display
+│   ├── run_experiment.py       # Main capture script
+│   ├── preprocess_data.py      # SlimPajama preprocessing
+│   ├── explore_npz.py          # Shard explorer
+│   └── show_experiment_config.py # Config display
 ├── data/
-│   ├── raw/                # Downloaded dataset (SlimPajama-6B)
-│   └── processed/          # Preprocessed .npz shards
-├── results/                # CSV output files
-├── CHECKLIST.md            # Progress tracking
-└── README.md               # This file
+│   ├── raw/                    # Downloaded dataset (gitignored)
+│   └── processed/              # .npz shards (gitignored)
+├── results/                    # CSV outputs (gitignored)
+├── CHECKLIST.md                # This file
+├── README.md                   # Project documentation
+└── .gitignore                  # Excludes data/results/pkl
 ```
 
 ---
 
-## Key Design Decisions
+## 🔀 Branch Information
 
-### Pre-RoPE Analysis
-
-Query and Key vectors are captured **before** RoPE (Rotary Position Embedding). This analyzes the intrinsic geometry of query vectors in position-agnostic space. RoPE preserves norms (rotation), so ‖Q‖ is unchanged.
-
-### Attention Recomputation
-
-We manually recompute attention (`softmax(Q @ K^T / sqrt(d))`) rather than capturing from FlashAttention, which doesn't expose intermediate weights. This ensures full control and consistency.
-
-### Metrics Captured
-
-- **Query Norm:** L2 norm of Q vectors
-- **Entropy:** `-Σ p·log(p)` over valid attention weights
-- **Max Attention:** Peak attention weight per token
-- **k_eff:** Minimum keys needed for 90% attention mass
+| Branch      | Purpose                  | Status                 |
+| ----------- | ------------------------ | ---------------------- |
+| `main`      | Baseline metrics capture | ✅ Complete, protected |
+| `intervene` | Phase 1 Experiment 1     | 🔄 Active development  |
 
 ---
 
-## Environment Setup
+## 📝 Key Design Decisions (Documented)
 
-### Prerequisites
-
-- NVIDIA GPU (≥ 16 GB VRAM, 24 GB recommended)
-- CUDA 12.1+
-- Python 3.10+
-
-### Installation
-
-```bash
-conda create -n spectra python=3.10 -y
-conda activate spectra
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt
-```
+1. **Pre-RoPE Analysis**: Q/K captured before rotation — position-agnostic geometry
+2. **Manual Attention**: Recomputed (not FlashAttention) — exposes intermediate weights
+3. **Sequential Sampling**: First N samples from shards — deterministic, not stratified
+4. **Incremental CSV**: Appends after each sample — prevents OOM on large runs
+5. **No Correlation Analysis**: Removed — focus on raw data capture
 
 ---
 
-## Running on SageMaker
+## ✅ Ready for Next Phase
 
-```bash
-# After launching GPU instance (ml.g5.xlarge or higher):
-git clone https://github.com/ajayspatil7/spectra.git
-cd spectra
-pip install -r requirements.txt
+Main branch is complete and protected. All future experiments should:
 
-# Preprocess data
-python scripts/preprocess_data.py --n-samples 50000
+1. Create new branch from `main`
+2. Make experimental changes
+3. Keep `main` as reproducible baseline
 
-# Capture metrics
-python scripts/run_experiment.py --n-samples 64
-```
-
----
-
-## License
-
-MIT
+**Current active branch:** `intervene` (Phase 1 Experiment 1)
