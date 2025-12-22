@@ -406,9 +406,11 @@ def compute_attention_manually(Q, K, V, layer_idx: int = 0):
     output = torch.matmul(attn_probs, V)
     print(f"  Output shape: {output.shape}")
     
-    return attn_probs, output
+    return attn_probs, output, causal_mask
 
-attn_probs, attn_output = compute_attention_manually(Q, K, V)
+
+attn_probs, attn_output, causal_mask = compute_attention_manually(Q, K, V)
+
 
 # %% [11] Visualize Attention Patterns
 def visualize_attention_pattern(attn_probs, head_idx: int = 0, save_path: str = None):
@@ -471,75 +473,110 @@ def compute_query_norms(Q):
 
 q_norms = compute_query_norms(Q)
 
-# %% [13] Compute Attention Entropy
-def compute_attention_entropy(attn_probs, eps: float = 1e-10):
+# %% [13] Compute Attention Entropy (MASK-AWARE, NaN-SAFE)
+def compute_attention_entropy(attn_probs, causal_mask=None, eps: float = 1e-9):
     """
-    Compute entropy of attention distribution.
-    
-    H = -Σ p_i * log(p_i)
-    
-    Higher entropy = more uniform attention (diffuse)
-    Lower entropy = more focused attention (sparse)
-    
+    Mask-aware attention entropy.
+
+    Correctly handles:
+    - causal masking
+    - zero-probability positions
+    - fp16 instability
+
     Args:
         attn_probs: [batch, n_heads, seq_len, seq_len]
-        eps: small value to avoid log(0)
-        
+        causal_mask: [seq_len, seq_len] with True = masked
+        eps: numerical stability constant
+
     Returns:
         entropy: [batch, n_heads, seq_len]
     """
     print("=" * 60)
-    print("ATTENTION ENTROPY COMPUTATION")
+    print("ATTENTION ENTROPY COMPUTATION (MASK-AWARE)")
     print("=" * 60)
-    
-    # Add epsilon to avoid log(0)
-    probs_safe = attn_probs.clamp(min=eps)
-    
-    # H = -Σ p * log(p)
-    entropy = -torch.sum(probs_safe * torch.log(probs_safe), dim=-1)
-    
+
+    # Promote to fp32 for numerical stability
+    attn_probs = attn_probs.float()
+
+    batch, n_heads, seq_len, _ = attn_probs.shape
+
+    # Build causal mask if not provided
+    if causal_mask is None:
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=attn_probs.device),
+            diagonal=1
+        ).bool()
+
+    # valid_mask: True where attention is allowed
+    valid_mask = ~causal_mask                     # [seq, seq]
+    valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)  # [1,1,seq,seq]
+
+    # Zero out masked probabilities explicitly
+    masked_probs = attn_probs * valid_mask
+
+    # Compute entropy ONLY over valid positions
+    entropy = -torch.sum(
+        masked_probs * torch.log(masked_probs + eps),
+        dim=-1
+    )
+
+    # Optional: ignore trivial early tokens (no context)
+    entropy[..., :2] = torch.nan
+
     print(f"Attention probs shape: {attn_probs.shape}")
     print(f"Entropy shape: {entropy.shape}")
-    print(f"\nSample entropy (head 0):")
-    print(f"  Min: {entropy[0, 0].min().item():.4f}")
-    print(f"  Max: {entropy[0, 0].max().item():.4f}")
-    print(f"  Mean: {entropy[0, 0].mean().item():.4f}")
-    
-    # Theoretical max entropy = log(seq_len)
-    seq_len = attn_probs.shape[-1]
-    max_entropy = np.log(seq_len)
-    print(f"\nTheoretical max entropy (uniform over {seq_len} tokens): {max_entropy:.4f}")
-    
+
+    print("\nSample entropy (head 0):")
+    finite_vals = entropy[0, 0][~torch.isnan(entropy[0, 0])]
+    print(f"  Min: {finite_vals.min().item():.4f}")
+    print(f"  Max: {finite_vals.max().item():.4f}")
+    print(f"  Mean: {finite_vals.mean().item():.4f}")
+
+    # Theoretical max entropy varies per token
+    print("\nNote:")
+    print("• Entropy is computed ONLY over valid causal support")
+    print("• Early tokens are ignored (NaN by design)")
+    print("• No log(0), no NaNs")
+
     return entropy
 
-attn_entropy = compute_attention_entropy(attn_probs)
 
-# %% [14] Correlate Query Norm with Entropy
+# %% [14] Correlate Query Norm with Entropy (NaN-safe)
 def correlate_norm_entropy(q_norms, attn_entropy):
     """
     Compute correlation between query norm and attention entropy.
-    
-    This is the core Phase 1 hypothesis test.
+    NaN-safe and statistically correct.
     """
     from scipy import stats
-    
+
     print("=" * 60)
-    print("QUERY NORM ↔ ATTENTION ENTROPY CORRELATION")
+    print("QUERY NORM ↔ ATTENTION ENTROPY CORRELATION (NaN-SAFE)")
     print("=" * 60)
-    
+
     n_heads = q_norms.shape[1]
-    
+
     print(f"\nPer-head correlations:")
     print("-" * 40)
-    
+
     results = []
+
     for h in range(n_heads):
         norms = q_norms[0, h].cpu().float().numpy()
         entropy = attn_entropy[0, h].cpu().float().numpy()
-        
-        pearson_r, pearson_p = stats.pearsonr(norms, entropy)
-        spearman_r, spearman_p = stats.spearmanr(norms, entropy)
-        
+
+        # ✅ DROP NaNs
+        valid = ~np.isnan(entropy)
+        norms = norms[valid]
+        entropy = entropy[valid]
+
+        # ⚠️ Need at least 4 points for correlation
+        if len(norms) < 4:
+            pearson_r = spearman_r = np.nan
+            pearson_p = spearman_p = np.nan
+        else:
+            pearson_r, pearson_p = stats.pearsonr(norms, entropy)
+            spearman_r, spearman_p = stats.spearmanr(norms, entropy)
+
         results.append({
             'head': h,
             'pearson_r': pearson_r,
@@ -547,14 +584,17 @@ def correlate_norm_entropy(q_norms, attn_entropy):
             'spearman_r': spearman_r,
             'spearman_p': spearman_p,
         })
-        
-        if h < 5 or h >= n_heads - 2:  # Print first 5 and last 2
-            print(f"  Head {h:2d}: Pearson r={pearson_r:+.4f} (p={pearson_p:.2e}), "
-                  f"Spearman ρ={spearman_r:+.4f}")
+
+        if h < 5 or h >= n_heads - 2:
+            print(
+                f"  Head {h:2d}: "
+                f"Pearson r={pearson_r:+.4f}, "
+                f"Spearman ρ={spearman_r:+.4f}"
+            )
         elif h == 5:
             print(f"  ... ({n_heads - 7} more heads)")
-    
-    return results
+
+attn_entropy = compute_attention_entropy(attn_probs, causal_mask)    
 
 # This will work with more tokens, but let's demonstrate structure
 correlations = correlate_norm_entropy(q_norms, attn_entropy)
