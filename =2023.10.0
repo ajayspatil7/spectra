@@ -1,0 +1,10 @@
+Requirement already satisfied: fsspec in /opt/conda/lib/python3.12/site-packages (2024.12.0)
+Collecting fsspec
+  Downloading fsspec-2025.12.0-py3-none-any.whl.metadata (10 kB)
+Downloading fsspec-2025.12.0-py3-none-any.whl (201 kB)
+Installing collected packages: fsspec
+  Attempting uninstall: fsspec
+    Found existing installation: fsspec 2024.12.0
+    Uninstalling fsspec-2024.12.0:
+      Successfully uninstalled fsspec-2024.12.0
+Successfully installed fsspec-2025.12.0
