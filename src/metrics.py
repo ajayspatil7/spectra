@@ -149,16 +149,19 @@ def compute_max_attention_weight(
             diagonal=1
         ).bool()
     
-    # Valid mask: True where attention is allowed
-    valid_mask = ~causal_mask
-    if batch is not None:
-        valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)
-    else:
-        valid_mask = valid_mask.unsqueeze(0)
+    # Valid mask: True where attention is allowed - broadcast to match attn_probs shape
+    valid_mask = ~causal_mask  # [seq, seq]
     
-    # Mask out invalid positions with -inf to ignore in max
-    masked_probs = attn_probs.clone()
-    masked_probs[~valid_mask] = 0.0
+    # Expand to match attention probs dimensions
+    # attn_probs is [batch, n_heads, seq, seq] or [n_heads, seq, seq]
+    if batch is not None:
+        valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seq, seq]
+    else:
+        valid_mask = valid_mask.unsqueeze(0)  # [1, seq, seq]
+    
+    # Broadcast will handle the n_heads dimension automatically
+    # Mask out invalid positions
+    masked_probs = attn_probs.masked_fill(~valid_mask, 0.0)
     
     # Get max along key dimension
     max_weights = torch.max(masked_probs, dim=-1).values
@@ -201,15 +204,18 @@ def compute_effective_attention_span(
             diagonal=1
         ).bool()
     
-    # Valid mask
-    valid_mask = ~causal_mask
-    if batch is not None:
-        valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)
-    else:
-        valid_mask = valid_mask.unsqueeze(0)
+    # Valid mask - broadcast to match attn_probs shape
+    valid_mask = ~causal_mask  # [seq, seq]
     
+    # Expand to match attention probs dimensions
+    if batch is not None:
+        valid_mask = valid_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seq, seq]
+    else:
+        valid_mask = valid_mask.unsqueeze(0)  # [1, seq, seq]
+    
+    # Broadcast will handle the n_heads dimension
     # Zero out masked positions
-    masked_probs = attn_probs * valid_mask
+    masked_probs = attn_probs * valid_mask.float()
     
     # Sort attention weights in descending order
     sorted_probs, _ = torch.sort(masked_probs, dim=-1, descending=True)
