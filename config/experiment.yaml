@@ -6,32 +6,34 @@
 experiment:
   name: "Spectra-Phase1-M"
   description: "Multi-model generalization of query norm → attention control"
+  phase: "Phase1-M"
+  preregistered: true
   seed: 42
 
 # Model configurations
-# Add/remove models here to change experiment scope
+# LOCKED: Single model for this run
 models:
   - name: "meta-llama/Meta-Llama-3-8B"
     family: "llama"
     enabled: true
 
-  # Uncomment to add more models:
+  # Future models (disabled for Phase1-M initial run):
   # - name: "meta-llama/Meta-Llama-3-70B"
   #   family: "llama"
-  #   enabled: true
+  #   enabled: false
   # - name: "mistralai/Mistral-7B-v0.1"
   #   family: "mistral"
   #   enabled: false
 
-# Context lengths to test
+# Context lengths - CORE VARIABLE FOR THIS RUN
 context_lengths:
-  - 512
-  # - 1024  # Uncomment for Phase1-M
-  # - 2048  # Uncomment for Phase1-M
+  planned: [128, 512, 1024]
+  enabled: [128, 512, 1024]
 
 # Scaling factors for intervention experiments
 alphas:
   default: [0.5, 0.75, 1.0, 1.25, 1.5]
+  description: "Symmetric scaling around identity to test monotonicity"
 
 # Which experiments to run
 experiments:
@@ -44,6 +46,7 @@ experiments:
     description: "Causal Q-scaling intervention"
     target_layer: 12
     target_head: 0
+    selection: "fixed_control_head"
 
   exp2b:
     enabled: true
@@ -52,20 +55,23 @@ experiments:
   exp3a:
     enabled: true
     description: "Q vs K scaling control"
-    # Head selected from exp2b median gain
+    depends_on: "exp2b"
+    head_selection: "median_gain_head"
 
   exp3b:
     enabled: true
     description: "Gain-conditioned Q vs K comparison"
+    depends_on: "exp2b"
     high_gain_percentile: 95
     medium_gain_percentile: 50
     low_gain_percentile: 5
 
 # Data configuration
 data:
-  source: "preprocessed" # Options: preprocessed, wikipedia, code
+  source: "preprocessed"
   directory: "data/processed"
   sample_idx: 0
+  note: "Same sample reused across all context lengths for controlled comparison"
 
 # Output configuration
 output:
