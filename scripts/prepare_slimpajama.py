@@ -39,16 +39,44 @@ def download_slimpajama(cache_dir: Path):
     
     cache_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load the full dataset (will cache locally)
-    dataset = load_dataset(
-        "DKYoon/SlimPajama-6B",
-        split="train",
-        cache_dir=str(cache_dir),
-        trust_remote_code=True
-    )
+    # Try different loading approaches
+    try:
+        # Method 1: Direct load with explicit config
+        dataset = load_dataset(
+            "DKYoon/SlimPajama-6B",
+            split="train",
+            cache_dir=str(cache_dir),
+        )
+        print(f"  Dataset size: {len(dataset)} samples")
+        return dataset
+    except ValueError as e:
+        print(f"  Direct load failed: {e}")
+        print("  Trying alternative method...")
     
-    print(f"  Dataset size: {len(dataset)} samples")
-    return dataset
+    try:
+        # Method 2: Load with streaming first, then convert
+        print("  Loading with streaming mode...")
+        dataset = load_dataset(
+            "DKYoon/SlimPajama-6B",
+            split="train",
+            streaming=True,
+        )
+        
+        # Take first N samples and convert to list
+        print("  Converting streamed samples to list...")
+        samples = []
+        for i, sample in enumerate(dataset):
+            samples.append(sample)
+            if i >= 10000:  # Limit to 10k samples
+                break
+            if i % 1000 == 0:
+                print(f"    Loaded {i} samples...")
+        
+        print(f"  Loaded {len(samples)} samples")
+        return samples
+    except Exception as e2:
+        print(f"  Streaming also failed: {e2}")
+        raise RuntimeError(f"Could not load SlimPajama-6B: {e2}")
 
 
 def generate_samples_from_dataset(
