@@ -53,7 +53,7 @@ experiments:
     description: "Global gain analysis (all heads)"
 
   exp3a:
-    enabled: true
+    enabled: false # Disabled: exp3b is a superset (tests 3 heads including median)
     description: "Q vs K scaling control"
     depends_on: "exp2b"
     head_selection: "median_gain_head"
