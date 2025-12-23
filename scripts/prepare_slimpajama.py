@@ -3,22 +3,11 @@
 SlimPajama Dataset Preparation
 ===============================
 
-Downloads SlimPajama-6B and generates context-length-specific samples.
-
-Steps:
-1. Download DKYoon/SlimPajama-6B to data/slimpajama
-2. Generate 64 random samples at each context length
-3. Save as NPZ (for training) and JSON (human-readable)
+Downloads SlimPajama-6B using huggingface_hub (bypasses fsspec bug)
+and generates context-length-specific samples.
 
 Usage:
     python scripts/prepare_slimpajama.py
-    
-Outputs:
-    data/slimpajama/          - Raw dataset cache
-    data/ctx128/              - 128-token samples
-    data/ctx512/              - 512-token samples
-    data/ctx1024/             - 1024-token samples
-    data/ctx2048/             - 2048-token samples
 """
 
 import argparse
@@ -26,78 +15,72 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-import torch
 import numpy as np
 from transformers import AutoTokenizer
-from datasets import load_dataset
+from huggingface_hub import hf_hub_download, list_repo_files
 
 
-def download_slimpajama(cache_dir: Path):
-    """Download SlimPajama-6B dataset."""
+def download_slimpajama(cache_dir: Path, max_files: int = 5):
+    """Download SlimPajama-6B parquet files using huggingface_hub."""
     print("\n--- Downloading SlimPajama-6B ---")
     print(f"  Cache dir: {cache_dir}")
     
     cache_dir.mkdir(parents=True, exist_ok=True)
     
-    # Try different loading approaches
-    try:
-        # Method 1: Direct load with explicit config
-        dataset = load_dataset(
-            "DKYoon/SlimPajama-6B",
-            split="train",
-            cache_dir=str(cache_dir),
-        )
-        print(f"  Dataset size: {len(dataset)} samples")
-        return dataset
-    except ValueError as e:
-        print(f"  Direct load failed: {e}")
-        print("  Trying alternative method...")
+    repo_id = "DKYoon/SlimPajama-6B"
     
-    try:
-        # Method 2: Load with streaming first, then convert
-        print("  Loading with streaming mode...")
-        dataset = load_dataset(
-            "DKYoon/SlimPajama-6B",
-            split="train",
-            streaming=True,
+    # List files in repo
+    print("  Listing repository files...")
+    files = list_repo_files(repo_id=repo_id)
+    parquet_files = [f for f in files if f.endswith('.parquet')]
+    
+    print(f"  Found {len(parquet_files)} parquet files")
+    
+    # Download first few parquet files
+    downloaded = []
+    for i, pf in enumerate(parquet_files[:max_files]):
+        print(f"  Downloading {i+1}/{min(max_files, len(parquet_files))}: {pf}")
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=pf,
+            cache_dir=str(cache_dir),
+            repo_type="dataset"
         )
-        
-        # Take first N samples and convert to list
-        print("  Converting streamed samples to list...")
-        samples = []
-        for i, sample in enumerate(dataset):
-            samples.append(sample)
-            if i >= 10000:  # Limit to 10k samples
-                break
-            if i % 1000 == 0:
-                print(f"    Loaded {i} samples...")
-        
-        print(f"  Loaded {len(samples)} samples")
-        return samples
-    except Exception as e2:
-        print(f"  Streaming also failed: {e2}")
-        raise RuntimeError(f"Could not load SlimPajama-6B: {e2}")
+        downloaded.append(local_path)
+    
+    print(f"  Downloaded {len(downloaded)} files")
+    return downloaded
 
 
-def generate_samples_from_dataset(
-    dataset,
+def load_samples_from_parquet(parquet_files, max_samples: int = 10000):
+    """Load samples from parquet files."""
+    import pandas as pd
+    
+    print(f"\n  Loading samples from {len(parquet_files)} parquet files...")
+    
+    all_samples = []
+    for pf in parquet_files:
+        df = pd.read_parquet(pf)
+        texts = df['text'].tolist()
+        all_samples.extend(texts)
+        print(f"    Loaded {len(texts)} samples from {Path(pf).name}")
+        
+        if len(all_samples) >= max_samples:
+            break
+    
+    print(f"  Total samples: {len(all_samples)}")
+    return all_samples[:max_samples]
+
+
+def generate_samples(
+    texts: list,
     tokenizer,
     target_length: int,
     output_dir: Path,
     n_samples: int = 64,
     seed: int = 42
 ):
-    """
-    Generate samples at a specific context length from cached dataset.
-    
-    Args:
-        dataset: HuggingFace dataset
-        tokenizer: Tokenizer
-        target_length: Target token count
-        output_dir: Output directory
-        n_samples: Number of samples
-        seed: Random seed
-    """
+    """Generate samples at a specific context length."""
     output_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"\n--- Generating {n_samples} samples of {target_length} tokens ---")
@@ -105,71 +88,55 @@ def generate_samples_from_dataset(
     
     np.random.seed(seed)
     
-    # Sample random indices
-    dataset_size = len(dataset)
-    random_indices = np.random.choice(dataset_size, size=min(n_samples * 10, dataset_size), replace=False)
+    # Shuffle texts
+    indices = np.random.permutation(len(texts))
     
     samples = []
-    sample_texts = []  # For JSON
+    sample_texts = []
     
-    for idx in random_indices:
+    for idx in indices:
         if len(samples) >= n_samples:
             break
         
-        text = dataset[int(idx)]["text"]
-        if not text:
+        text = texts[idx]
+        if not text or len(text) < 100:
             continue
         
         # Tokenize
         tokens = tokenizer.encode(text, add_special_tokens=False)
         
-        # Skip if too short
         if len(tokens) < target_length:
             continue
         
-        # Take first target_length tokens
         tokens = tokens[:target_length]
-        
         samples.append(tokens)
         
-        # Decode for JSON (human-readable)
-        decoded_text = tokenizer.decode(tokens)
+        decoded = tokenizer.decode(tokens)
         sample_texts.append({
             "sample_idx": len(samples),
             "source_idx": int(idx),
             "n_tokens": len(tokens),
-            "text_preview": decoded_text[:500] + "..." if len(decoded_text) > 500 else decoded_text,
-            "full_text": decoded_text
+            "text_preview": decoded[:500] + "..." if len(decoded) > 500 else decoded,
+            "full_text": decoded
         })
         
-        print(f"    Sample {len(samples)}/{n_samples}: {len(tokens)} tokens (source idx: {idx})")
+        print(f"    Sample {len(samples)}/{n_samples}: {len(tokens)} tokens")
     
     if not samples:
         print(f"  Warning: No samples generated!")
         return 0
     
-    # Save as NPZ
+    # Save NPZ
     all_tokens = np.array(samples, dtype=np.int32)
     shard_path = output_dir / "shard_000.npz"
-    np.savez_compressed(
-        shard_path,
-        input_ids=all_tokens,
-        n_samples=len(samples),
-        target_length=target_length
-    )
-    print(f"  Saved NPZ: {shard_path}")
-    print(f"  Shape: {all_tokens.shape}")
+    np.savez_compressed(shard_path, input_ids=all_tokens, n_samples=len(samples), target_length=target_length)
+    print(f"  Saved NPZ: {shard_path} (shape: {all_tokens.shape})")
     
-    # Save as JSON (human-readable)
+    # Save JSON
     json_path = output_dir / "samples.json"
     with open(json_path, 'w') as f:
         json.dump({
-            "metadata": {
-                "target_length": target_length,
-                "n_samples": len(samples),
-                "seed": seed,
-                "generated_at": datetime.now().isoformat()
-            },
+            "metadata": {"target_length": target_length, "n_samples": len(samples), "seed": seed, "generated_at": datetime.now().isoformat()},
             "samples": sample_texts
         }, f, indent=2)
     print(f"  Saved JSON: {json_path}")
@@ -178,16 +145,13 @@ def generate_samples_from_dataset(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Prepare SlimPajama samples")
-    parser.add_argument("--model", type=str, default="meta-llama/Meta-Llama-3-8B",
-                        help="Tokenizer model")
-    parser.add_argument("--lengths", type=str, default="128,512,1024,2048",
-                        help="Comma-separated context lengths")
-    parser.add_argument("--n-samples", type=int, default=64,
-                        help="Number of samples per length")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="meta-llama/Meta-Llama-3-8B")
+    parser.add_argument("--lengths", default="128,512,1024,2048")
+    parser.add_argument("--n-samples", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--cache-dir", type=str, default="data/slimpajama",
-                        help="Where to cache SlimPajama dataset")
+    parser.add_argument("--cache-dir", default="data/slimpajama")
+    parser.add_argument("--max-files", type=int, default=5, help="Max parquet files to download")
     return parser.parse_args()
 
 
@@ -204,38 +168,28 @@ def main():
     print(f"\nLoading tokenizer: {args.model}")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     
-    # Download/load SlimPajama
-    dataset = download_slimpajama(cache_dir)
+    # Download parquet files
+    parquet_files = download_slimpajama(cache_dir, max_files=args.max_files)
     
-    # Parse lengths
-    lengths = [int(x.strip()) for x in args.lengths.split(",")]
-    print(f"\nContext lengths: {lengths}")
-    print(f"Samples per length: {args.n_samples}")
+    # Load samples
+    texts = load_samples_from_parquet(parquet_files)
     
     # Generate for each length
+    lengths = [int(x.strip()) for x in args.lengths.split(",")]
+    print(f"\nContext lengths: {lengths}")
+    
     results = {}
     for length in lengths:
         output_dir = Path(f"data/ctx{length}")
-        count = generate_samples_from_dataset(
-            dataset,
-            tokenizer,
-            target_length=length,
-            output_dir=output_dir,
-            n_samples=args.n_samples,
-            seed=args.seed
-        )
+        count = generate_samples(texts, tokenizer, length, output_dir, args.n_samples, args.seed)
         results[length] = count
     
     # Summary
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    print(f"\n  SlimPajama cached: {cache_dir}")
     for length, count in results.items():
-        print(f"  ctx{length}: {count} samples → data/ctx{length}/")
-        print(f"         NPZ: data/ctx{length}/shard_000.npz")
-        print(f"        JSON: data/ctx{length}/samples.json")
-    
+        print(f"  ctx{length}: {count} samples")
     print("\nDone!")
 
 
