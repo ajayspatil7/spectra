@@ -47,15 +47,19 @@ def generate_samples(
     print(f"\n--- Generating {n_samples} samples of {target_length} tokens ---")
     print(f"  Output: {output_dir}")
     
-    # Use Wikipedia for long text
-    print("  Loading Wikipedia dataset...")
-    dataset = load_dataset("wikipedia", "20220301.en", split="train", streaming=True)
+    # Use C4 (streamable) or allenai/c4
+    print("  Loading C4 dataset (streamable)...")
+    try:
+        dataset = load_dataset("allenai/c4", "en", split="train", streaming=True, trust_remote_code=True)
+    except Exception as e:
+        print(f"  Trying alternative dataset...")
+        dataset = load_dataset("cerebras/SlimPajama-627B", split="train", streaming=True, trust_remote_code=True)
     
     samples = []
     sample_idx = 0
     
     np.random.seed(seed)
-    skip_count = np.random.randint(0, 10000)  # Random starting point
+    skip_count = np.random.randint(0, 1000)  # Random starting point
     
     iterator = iter(dataset)
     for _ in range(skip_count):
@@ -64,13 +68,19 @@ def generate_samples(
         except StopIteration:
             iterator = iter(dataset)
     
-    while len(samples) < n_samples:
+    attempts = 0
+    max_attempts = 10000
+    
+    while len(samples) < n_samples and attempts < max_attempts:
+        attempts += 1
         try:
             article = next(iterator)
         except StopIteration:
             break
         
-        text = article["text"]
+        text = article.get("text", "")
+        if not text:
+            continue
         
         # Tokenize
         tokens = tokenizer.encode(text, add_special_tokens=False)
@@ -99,6 +109,8 @@ def generate_samples(
         )
         print(f"  Saved: {shard_path}")
         print(f"  Shape: {all_tokens.shape}")
+    else:
+        print(f"  Warning: No samples generated!")
     
     return len(samples)
 
