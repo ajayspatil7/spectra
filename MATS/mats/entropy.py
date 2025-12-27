@@ -107,7 +107,10 @@ def compute_delta_entropy(
     """
     Compute ΔEntropy between Sycophancy and Control conditions.
     
-    ΔE = E_sycophancy - E_control
+    HANDLES VARIABLE-LENGTH SEQUENCES: Compares mean entropy per head,
+    not per-position delta (since prompts have different lengths).
+    
+    ΔE = mean(E_sycophancy) - mean(E_control)
     
     Interpretation:
     - ΔE > 0: Head becomes MORE diffuse during rationalization
@@ -120,25 +123,29 @@ def compute_delta_entropy(
         
     Returns:
         Dict with:
-            - "delta_entropy": Per-position delta [batch, head, q]
+            - "mean_entropy_syco": Mean entropy per head [batch, head]
+            - "mean_entropy_ctrl": Mean entropy per head [batch, head]
             - "mean_delta": Mean delta per head [batch, head]
     """
-    entropy_syco = calculate_entropy(pattern_sycophancy)
-    entropy_ctrl = calculate_entropy(pattern_control)
+    # Compute entropy for each condition separately
+    entropy_syco = calculate_entropy(pattern_sycophancy)  # [batch, head, seq_syco]
+    entropy_ctrl = calculate_entropy(pattern_control)     # [batch, head, seq_ctrl]
     
     # Mask early positions
     if ignore_first_n > 0:
         entropy_syco[..., :ignore_first_n] = float('nan')
         entropy_ctrl[..., :ignore_first_n] = float('nan')
     
-    # Delta (can be negative)
-    delta = entropy_syco - entropy_ctrl
+    # Compute mean entropy per head (handles different seq lengths)
+    mean_syco = torch.nanmean(entropy_syco, dim=-1)  # [batch, head]
+    mean_ctrl = torch.nanmean(entropy_ctrl, dim=-1)  # [batch, head]
     
-    # Mean across positions
-    mean_delta = torch.nanmean(delta, dim=-1)
+    # Delta of means (not mean of deltas - sequences are different lengths)
+    mean_delta = mean_syco - mean_ctrl
     
     return {
-        "delta_entropy": delta,
+        "mean_entropy_syco": mean_syco,
+        "mean_entropy_ctrl": mean_ctrl,
         "mean_delta": mean_delta,
     }
 

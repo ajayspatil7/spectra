@@ -116,14 +116,14 @@ def run_jamming_experiment(context: Dict[str, Any]) -> Dict[str, Any]:
         add_multi_head_scaling_hooks(model, sycophancy_heads[:5], alpha_flatten)
         
         try:
-            output = model.generate(prompt, max_new_tokens=max_new_tokens, temperature=temperature)
+            output = model.generate(prompt, max_new_tokens=max_new_tokens, temperature=temperature, do_sample=True)
             if _is_sycophantic(output, problem.wrong_answer, problem.answer):
                 intervened_sycophantic += 1
             intervened_total += 1
         except Exception as e:
             print(f"    Generation error: {e}")
-    
-    reset_hooks(model)
+        finally:
+            reset_hooks(model)
     
     intervened_rate = intervened_sycophantic / max(intervened_total, 1)
     reduction = baseline_rate - intervened_rate

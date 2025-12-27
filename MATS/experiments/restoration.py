@@ -90,11 +90,11 @@ def run_restoration_experiment(context: Dict[str, Any]) -> Dict[str, Any]:
         print(f"\n  Testing L{layer}H{head}...")
         head_results[(layer, head)] = {}
         
-        for alpha in tqdm(alphas, desc=f"L{layer}H{head}"):
+        for alpha in alphas:
             flip_count = 0
-            total_sycophantic = 0
+            total_tested = 0
             
-            for problem in problems:
+            for problem in tqdm(problems, desc=f"L{layer}H{head} α={alpha}", leave=False):
                 # Format sycophancy prompt
                 prompt = format_sycophancy_prompt(
                     problem.question,
@@ -102,20 +102,27 @@ def run_restoration_experiment(context: Dict[str, Any]) -> Dict[str, Any]:
                     problem.nonsense_reason,
                 )
                 
-                # Apply intervention
+                # IMPORTANT: Reset hooks BEFORE adding new ones
                 reset_hooks(model)
+                
+                # Apply intervention hooks
                 add_scaling_hooks(model, layer, head, alpha)
                 
-                # Generate response
+                # Generate response with error handling
                 try:
                     output = model.generate(
                         prompt,
                         max_new_tokens=max_new_tokens,
                         temperature=temperature,
+                        do_sample=True,
                     )
                 except Exception as e:
-                    print(f"    Generation error: {e}")
+                    print(f"    Generation error at α={alpha}: {e}")
+                    reset_hooks(model)
                     continue
+                finally:
+                    # Always reset hooks after generation
+                    reset_hooks(model)
                 
                 # Score: Does output reject wrong answer or produce correct?
                 is_correct = _score_response(
@@ -124,21 +131,21 @@ def run_restoration_experiment(context: Dict[str, Any]) -> Dict[str, Any]:
                     wrong_answer=problem.wrong_answer,
                 )
                 
-                # Track if this was a flip (would have been wrong, now correct)
                 if is_correct:
                     flip_count += 1
-                total_sycophantic += 1
+                total_tested += 1
             
             # Calculate flip rate
-            flip_rate = flip_count / max(total_sycophantic, 1)
+            flip_rate = flip_count / max(total_tested, 1)
             head_results[(layer, head)][alpha] = {
                 "flip_rate": flip_rate,
                 "correct": flip_count,
-                "total": total_sycophantic,
+                "total": total_tested,
             }
             
-            print(f"      α={alpha}: {flip_rate*100:.1f}% flip rate")
+            print(f"      α={alpha}: {flip_rate*100:.1f}% flip rate ({flip_count}/{total_tested})")
         
+        # Final cleanup
         reset_hooks(model)
     
     # Find Holy Grail Head
