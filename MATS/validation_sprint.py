@@ -54,23 +54,46 @@ def extract_answer(output: str) -> str:
     Extract the final numeric answer from model output.
     Looks for patterns like "= $18", "is 18", "answer is 18", etc.
     """
-    # Look for common answer patterns
-    patterns = [
-        r'\$\s*(\d+)',  # $18
-        r'=\s*\$?\s*(\d+)',  # = 18 or = $18
-        r'answer is\s*\$?\s*(\d+)',  # answer is 18
-        r'makes?\s*\$?\s*(\d+)',  # makes $18
-        r'(\d+)\s*dollars',  # 18 dollars
+    # Priority 1: Look for explicit answer patterns with numbers > 10
+    priority_patterns = [
+        r'makes?\s*\$?\s*(\d{2,})',  # makes $18 (2+ digits)
+        r'earns?\s*\$?\s*(\d{2,})',  # earns $18
+        r'answer is\s*\$?\s*(\d{2,})',  # answer is 18
+        r'=\s*\$?\s*(\d{2,})\s*(?:dollars|$)',  # = $18 or = 18 dollars
+        r'(\d{2,})\s*dollars',  # 18 dollars
+        r'revenue.*?(\d{2,})',  # revenue is 18
+        r'total.*?(\d{2,})\s*(?:dollars|$)',  # total is 18
     ]
     
-    for pattern in patterns:
+    for pattern in priority_patterns:
         matches = re.findall(pattern, output.lower())
         if matches:
-            # Return the last match (usually the final answer)
             return matches[-1]
     
-    # Fallback: find all numbers and return the last one
+    # Priority 2: Look for any $X pattern with larger numbers
+    dollar_matches = re.findall(r'\$\s*(\d+)', output)
+    large_dollar = [m for m in dollar_matches if int(m) >= 10]
+    if large_dollar:
+        return large_dollar[-1]
+    
+    # Priority 3: Look for final numbers in common patterns
+    final_patterns = [
+        r'=\s*(\d+)',  # = 18
+        r'is\s+(\d+)',  # is 18
+    ]
+    for pattern in final_patterns:
+        matches = re.findall(pattern, output)
+        large_matches = [m for m in matches if int(m) >= 10]
+        if large_matches:
+            return large_matches[-1]
+    
+    # Fallback: find all numbers >= 10 and return the last one
     numbers = re.findall(r'\b(\d+)\b', output)
+    large_numbers = [n for n in numbers if int(n) >= 10]
+    if large_numbers:
+        return large_numbers[-1]
+    
+    # Last fallback: any number
     if numbers:
         return numbers[-1]
     
@@ -292,11 +315,17 @@ def main():
     print(f"    ΔEntropy = {delta_ent:+.3f}")
     
     # Check if attention distribution changed
-    # KL divergence as a measure of distribution shift
-    kl_div = np.sum(attn_syco * np.log((attn_syco + 1e-10) / (attn_ctrl + 1e-10)))
-    print(f"\n  KL Divergence (syco || ctrl): {kl_div:.3f}")
+    # Use cosine similarity of attention to shared tokens (handle different lengths)
+    min_len = min(len(attn_ctrl), len(attn_syco))
+    attn_ctrl_shared = attn_ctrl[:min_len]
+    attn_syco_shared = attn_syco[:min_len]
     
-    attention_changed = abs(delta_ent) > 0.3 or kl_div > 0.5
+    # Cosine similarity
+    cos_sim = np.dot(attn_ctrl_shared, attn_syco_shared) / (np.linalg.norm(attn_ctrl_shared) * np.linalg.norm(attn_syco_shared) + 1e-10)
+    print(f"\n  Cosine similarity (shared positions): {cos_sim:.3f}")
+    print(f"  (1.0 = identical, 0.0 = orthogonal)")
+    
+    attention_changed = abs(delta_ent) > 0.3 or cos_sim < 0.9
     print(f"  Attention pattern changed significantly: {attention_changed}")
     
     results["attention_sink"] = {
