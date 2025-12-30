@@ -513,7 +513,7 @@ def main():
     print(f"\nAccuracy by Alpha:")
     for _, row in accuracy_df.iterrows():
         bar = "█" * int(row["accuracy"] * 20)
-        print(f"  α={row['alpha']:5.1f}: {row['accuracy']:5.1%} [{row['n_correct']:2d}/{row['n_total']:2d}] {bar}")
+        print(f"  α={row['alpha']:5.1f}: {row['accuracy']:5.1%} [{int(row['n_correct']):2d}/{int(row['n_total']):2d}] {bar}")
     
     print(f"\n  Peak accuracy: {peak_acc:.1%} at α={peak_alpha}")
     
