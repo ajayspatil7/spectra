@@ -264,8 +264,9 @@ Assistant:"""
 
 def extract_answer(output: str) -> str:
     """Extract the final numeric answer from model output."""
-    # Priority patterns for multi-digit answers
+    # Priority patterns for answers
     patterns = [
+        r'(\d+:\d+)',  # Time format (6:30) - MUST BE FIRST
         r'(?:answer|result|total|makes?|earns?|costs?|is)\s*(?:is|=|:)?\s*\$?\s*(\d+(?:\.\d+)?)',
         r'=\s*\$?\s*(\d+(?:\.\d+)?)',
         r'\$\s*(\d+(?:\.\d+)?)',
@@ -276,7 +277,10 @@ def extract_answer(output: str) -> str:
         matches = re.findall(pattern, output.lower())
         if matches:
             # Return the last match (usually the final answer)
-            return matches[-1].replace('.0', '')
+            result = matches[-1]
+            if ':' in result:  # Time format, return as-is
+                return result
+            return result.replace('.0', '')
     
     # Fallback: find all numbers >= 2 digits
     numbers = re.findall(r'\b(\d+)\b', output)
@@ -352,20 +356,50 @@ def main():
     pbar = tqdm(total=total_runs, desc="Sweep Progress")
     
     for problem in problems:
+        # Get prompt length for entropy calculation on generated tokens only
+        prompt_len = len(model.tokenizer.encode(problem.prompt))
+        
         for alpha in alphas:
             # Reset and apply hooks
             reset_hooks(model)
             if alpha != 1.0:  # 1.0 is baseline (no intervention)
                 add_scaling_hooks(model, TARGET_LAYER, TARGET_HEAD, alpha)
             
-            # Generate (greedy decoding with temperature=0)
+            # Generate with cache in single pass (efficiency fix)
+            output = ""
+            entropy_val = None
             try:
+                # Run with cache to get both output and attention patterns
+                _, cache = model.run_with_cache(
+                    problem.prompt,
+                    max_new_tokens=200,
+                    temperature=0.0,
+                    do_sample=False,
+                )
+                
+                # Get generated output
                 output = model.generate(
                     problem.prompt,
                     max_new_tokens=200,
-                    temperature=0.0,  # Greedy
+                    temperature=0.0,
                     do_sample=False,
                 )
+                
+                # Compute entropy on GENERATED tokens only (not prompt)
+                pattern = cache["pattern", TARGET_LAYER][0, TARGET_HEAD]  # [seq_len, seq_len]
+                seq_len = pattern.shape[0]
+                
+                if seq_len > prompt_len:
+                    # Get entropy for generated positions only
+                    gen_pattern = pattern[prompt_len:, :]  # [gen_len, seq_len]
+                    # Compute mean entropy across generated positions
+                    gen_entropy = -torch.sum(gen_pattern * torch.log(gen_pattern + 1e-10), dim=-1)
+                    entropy_val = float(gen_entropy.mean().cpu())
+                else:
+                    # Fallback: use last position entropy
+                    last_pattern = pattern[-1, :]
+                    entropy_val = float(-torch.sum(last_pattern * torch.log(last_pattern + 1e-10)).cpu())
+                    
             except Exception as e:
                 output = f"ERROR: {e}"
             finally:
@@ -373,19 +407,6 @@ def main():
             
             # Analyze result
             result = check_answer(output, problem.correct_answer, problem.wrong_answer)
-            
-            # Get entropy if possible
-            entropy_val = None
-            try:
-                reset_hooks(model)
-                if alpha != 1.0:
-                    add_scaling_hooks(model, TARGET_LAYER, TARGET_HEAD, alpha)
-                _, cache = model.run_with_cache(problem.prompt)
-                pattern = cache["pattern", TARGET_LAYER][0, TARGET_HEAD, -1, :]
-                entropy_val = float(-torch.sum(pattern * torch.log(pattern + 1e-10)).cpu())
-                reset_hooks(model)
-            except:
-                pass
             
             all_results.append({
                 "problem_id": problem.id,
